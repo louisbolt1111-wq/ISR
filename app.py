@@ -23,15 +23,12 @@ with tab1:
         "PSU BANK": "^CNXPSUBANK",
         "INFRA": "^CNXINFRA",
         "MEDIA": "^CNXMEDIA",
-        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
         "COMMODITIES": "^CNXCMDT",
-        "CONSUMPTION": "^CNXCONSUM",
-        "HEALTHCARE": "NIFTY_HEALTHCARE.NS",
-        "OIL & GAS": "NIFTY_OIL_AND_GAS.NS"
+        "CONSUMPTION": "^CNXCONSUM"
     }
     BENCHMARK = "^NSEI"
 
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2, col3 = st.columns(3)
     with col1:
         timeframe = st.radio("Timeframe", ["Weekly", "Daily"], horizontal=True)
     with col2:
@@ -50,13 +47,19 @@ with tab1:
     @st.cache_data(ttl=1800)
     def compute_jdk_rrg(tf):
         tickers = [BENCHMARK] + list(SECTORS.values())
-        raw = yf.download(tickers, period="2y", interval="1d", progress=False)["Close"]
+        data = yf.download(tickers, period="2y", interval="1d", progress=False)
+        if data.empty:
+            return {}, {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}, pd.DataFrame(), "N/A"
+        
+        raw = data["Close"] if "Close" in data else data
+        if isinstance(raw, pd.Series):
+            raw = raw.to_frame()
         raw = raw.ffill().dropna(subset=[BENCHMARK])
         last_date = raw.index[-1].strftime("%d %b %Y")
 
         len_ratio = 60 if tf == "Weekly" else 14
         len_mom = 25 if tf == "Weekly" else 7
-        norm_win = 250 if tf == "Weekly" else 60
+        norm_win = 200 if tf == "Weekly" else 60
 
         results = {}
         quad_lists = {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}
@@ -75,7 +78,7 @@ with tab1:
             rs_momentum = 100 + ((mom_wma - mom_wma.rolling(norm_win).mean()) / mom_wma.rolling(norm_win).std()) * 2
 
             df_sec = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_momentum}).dropna()
-            if len(df_sec) < tail_length:
+            if len(df_sec) < 3:
                 continue
 
             step = 5 if tf == "Weekly" else 1
@@ -105,78 +108,79 @@ with tab1:
     rrg_data, quad_lists, table_df, last_date = compute_jdk_rrg(timeframe)
     st.caption(f"Benchmark: **Nifty 50** | Latest Data: **{last_date}**")
 
-    active_sectors = selected_sectors if selected_sectors else list(rrg_data.keys())
+    active_sectors = [s for s in (selected_sectors if selected_sectors else list(rrg_data.keys())) if s in rrg_data]
 
-    all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors if s in rrg_data])
-    all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors if s in rrg_data])
-    bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.15
-    bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.15
+    if not active_sectors:
+        st.warning("Yahoo Finance rate-limited or returned no sector data right now. Click the menu (top-right) -> Clear cache and rerun in 10 seconds.")
+    else:
+        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors])
+        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors])
+        bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.15
+        bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.15
 
-    fig = go.Figure()
+        fig = go.Figure()
 
-    fig.add_shape(type="rect", x0=100-bound_x, y0=100, x1=100, y1=100+bound_y, fillcolor="rgba(219, 234, 254, 0.55)", line_width=0, layer="below")
-    fig.add_shape(type="rect", x0=100, y0=100, x1=100+bound_x, y1=100+bound_y, fillcolor="rgba(220, 252, 231, 0.55)", line_width=0, layer="below")
-    fig.add_shape(type="rect", x0=100-bound_x, y0=100-bound_y, x1=100, y1=100, fillcolor="rgba(254, 226, 226, 0.55)", line_width=0, layer="below")
-    fig.add_shape(type="rect", x0=100, y0=100-bound_y, x1=100+bound_x, y1=100, fillcolor="rgba(254, 249, 195, 0.55)", line_width=0, layer="below")
+        fig.add_shape(type="rect", x0=100-bound_x, y0=100, x1=100, y1=100+bound_y, fillcolor="rgba(219, 234, 254, 0.55)", line_width=0, layer="below")
+        fig.add_shape(type="rect", x0=100, y0=100, x1=100+bound_x, y1=100+bound_y, fillcolor="rgba(220, 252, 231, 0.55)", line_width=0, layer="below")
+        fig.add_shape(type="rect", x0=100-bound_x, y0=100-bound_y, x1=100, y1=100, fillcolor="rgba(254, 226, 226, 0.55)", line_width=0, layer="below")
+        fig.add_shape(type="rect", x0=100, y0=100-bound_y, x1=100+bound_x, y1=100, fillcolor="rgba(254, 249, 195, 0.55)", line_width=0, layer="below")
 
-    fig.add_annotation(x=100-bound_x*0.92, y=100+bound_y*0.93, text="<b>Improving</b>", showarrow=False, font=dict(color="#2563EB", size=12))
-    fig.add_annotation(x=100+bound_x*0.92, y=100+bound_y*0.93, text="<b>Leading</b>", showarrow=False, font=dict(color="#16A34A", size=12))
-    fig.add_annotation(x=100-bound_x*0.92, y=100-bound_y*0.93, text="<b>Lagging</b>", showarrow=False, font=dict(color="#DC2626", size=12))
-    fig.add_annotation(x=100+bound_x*0.92, y=100-bound_y*0.93, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=12))
+        fig.add_annotation(x=100-bound_x*0.92, y=100+bound_y*0.93, text="<b>Improving</b>", showarrow=False, font=dict(color="#2563EB", size=12))
+        fig.add_annotation(x=100+bound_x*0.92, y=100+bound_y*0.93, text="<b>Leading</b>", showarrow=False, font=dict(color="#16A34A", size=12))
+        fig.add_annotation(x=100-bound_x*0.92, y=100-bound_y*0.93, text="<b>Lagging</b>", showarrow=False, font=dict(color="#DC2626", size=12))
+        fig.add_annotation(x=100+bound_x*0.92, y=100-bound_y*0.93, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=12))
 
-    for name in active_sectors:
-        if name not in rrg_data:
-            continue
-        tail = rrg_data[name]
-        sizes = [5] * (len(tail) - 1) + [11]
-        fig.add_trace(go.Scatter(
-            x=tail["RS_Ratio"],
-            y=tail["RS_Momentum"],
-            mode="lines+markers+text",
-            line_shape="spline",
-            line=dict(width=2),
-            name=name,
-            text=[""] * (len(tail) - 1) + [name],
-            textposition="middle right",
-            textfont=dict(size=10, color="#1F2937"),
-            marker=dict(size=sizes, line=dict(width=1, color="white"))
-        ))
+        for name in active_sectors:
+            tail = rrg_data[name]
+            sizes = [5] * (len(tail) - 1) + [12]
+            fig.add_trace(go.Scatter(
+                x=tail["RS_Ratio"],
+                y=tail["RS_Momentum"],
+                mode="lines+markers+text",
+                line_shape="spline",
+                line=dict(width=2),
+                name=name,
+                text=[""] * (len(tail) - 1) + [name],
+                textposition="middle right",
+                textfont=dict(size=10, color="#1F2937"),
+                marker=dict(size=sizes, line=dict(width=1, color="white"))
+            ))
 
-    fig.add_hline(y=100, line_width=1.5, line_color="#9CA3AF")
-    fig.add_vline(x=100, line_width=1.5, line_color="#9CA3AF")
-    fig.update_layout(
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        font=dict(color="#111827"),
-        xaxis_title="Trend (RS-Ratio)",
-        yaxis_title="Momentum (RS-Momentum)",
-        xaxis=dict(range=[100 - bound_x, 100 + bound_x], gridcolor="#E5E7EB", zeroline=False),
-        yaxis=dict(range=[100 - bound_y, 100 + bound_y], gridcolor="#E5E7EB", zeroline=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        height=650,
-        margin=dict(l=40, r=40, t=60, b=40)
-    )
+        fig.add_hline(y=100, line_width=1.5, line_color="#9CA3AF")
+        fig.add_vline(x=100, line_width=1.5, line_color="#9CA3AF")
+        fig.update_layout(
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            font=dict(color="#111827"),
+            xaxis_title="Trend (RS-Ratio)",
+            yaxis_title="Momentum (RS-Momentum)",
+            xaxis=dict(range=[100 - bound_x, 100 + bound_x], gridcolor="#E5E7EB", zeroline=False),
+            yaxis=dict(range=[100 - bound_y, 100 + bound_y], gridcolor="#E5E7EB", zeroline=False),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            height=650,
+            margin=dict(l=40, r=40, t=60, b=40)
+        )
 
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-    q1, q2, q3, q4 = st.columns(4)
-    with q1:
-        st.info(f"**Improving ({len(quad_lists['Improving'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Improving"]]) or "No symbols"))
-    with q2:
-        st.success(f"**Leading ({len(quad_lists['Leading'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Leading"]]) or "No symbols"))
-    with q3:
-        st.warning(f"**Weakening ({len(quad_lists['Weakening'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Weakening"]]) or "No symbols"))
-    with q4:
-        st.error(f"**Lagging ({len(quad_lists['Lagging'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Lagging"]]) or "No symbols"))
+        q1, q2, q3, q4 = st.columns(4)
+        with q1:
+            st.info(f"**Improving ({len(quad_lists['Improving'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Improving"]]) or "No symbols"))
+        with q2:
+            st.success(f"**Leading ({len(quad_lists['Leading'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Leading"]]) or "No symbols"))
+        with q3:
+            st.warning(f"**Weakening ({len(quad_lists['Weakening'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Weakening"]]) or "No symbols"))
+        with q4:
+            st.error(f"**Lagging ({len(quad_lists['Lagging'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Lagging"]]) or "No symbols"))
 
-    with st.expander("View Full Numerical Table"):
-        st.dataframe(table_df.sort_values(by=["Trend (RS-Ratio)", "Momentum (RS-Mom)"], ascending=False), use_container_width=True, hide_index=True)
+        with st.expander("View Full Numerical Table"):
+            st.dataframe(table_df.sort_values(by=["Trend (RS-Ratio)", "Momentum (RS-Mom)"], ascending=False), use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
     st.markdown(
         "Auto-loads `nsdl_fpi_latest.html` from your repository, or upload a newer report from "
-        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/FPI_Fortnightly_Selection.aspx):"
+        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/Latest.aspx):"
     )
 
     uploaded = st.file_uploader(
