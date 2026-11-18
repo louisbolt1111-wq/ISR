@@ -137,28 +137,68 @@ with tab1:
 
 with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
-    
-    if os.path.exists("nsdl_fpi_latest.csv"):
-        fpi_df = pd.read_csv("nsdl_fpi_latest.csv")
-        st.success(f"Loaded NSDL FPI Sector Data ({len(fpi_df)} rows)")
-        st.dataframe(fpi_df, use_container_width=True, hide_index=True)
-    else:
-        st.warning("Automated CSV not found yet. Click below to fetch directly from NSDL or upload the NSDL HTML/Excel report.")
-        if st.button("Fetch Latest NSDL FPI Data Now"):
-            with st.spinner("Contacting NSDL servers..."):
-                from fetch_nsdl import get_latest_nsdl_fpi
-                get_latest_nsdl_fpi()
-                if os.path.exists("nsdl_fpi_latest.csv"):
-                    st.rerun()
-                else:
-                    st.error("NSDL's firewall blocked the cloud server IP. Download the latest fortnightly file from fpi.nsdl.co.in and upload it below.")
-        
-        uploaded = st.file_uploader("Manual Fallback: Upload NSDL Sector Report (.html, .xls, .xlsx, .csv)", type=["html", "htm", "xls", "xlsx", "csv"])
-        if uploaded is not None:
+    st.markdown(
+        "Download the latest fortnightly report from [NSDL FPI Monitor](https://nsdl.co.in) "
+        "(click **View Report**, then **Export to Excel** or press `Ctrl+S` to save as HTML) and drop it below:"
+    )
+
+    uploaded = st.file_uploader(
+        "Upload NSDL Fortnightly Sector Report (.html, .htm, .xls, .xlsx, .csv)",
+        type=["html", "htm", "xls", "xlsx", "csv"]
+    )
+
+    fpi_df = None
+    if uploaded is not None:
+        try:
             if uploaded.name.endswith((".html", ".htm")):
-                df_up = max(pd.read_html(uploaded), key=len)
+                tables = pd.read_html(uploaded)
+                fpi_df = max(tables, key=len)
             elif uploaded.name.endswith(".csv"):
-                df_up = pd.read_csv(uploaded)
+                fpi_df = pd.read_csv(uploaded)
             else:
-                df_up = pd.read_excel(uploaded)
-            st.dataframe(df_up, use_container_width=True, hide_index=True)
+                fpi_df = pd.read_excel(uploaded)
+        except Exception as e:
+            st.error(f"Could not read file: {e}")
+    elif os.path.exists("nsdl_fpi_latest.csv"):
+        temp_df = pd.read_csv("nsdl_fpi_latest.csv")
+        if "Status" not in temp_df.columns:
+            fpi_df = temp_df
+
+    if fpi_df is not None:
+        if isinstance(fpi_df.columns, pd.MultiIndex):
+            fpi_df.columns = [" ".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() for col in fpi_df.columns]
+
+        st.success(f"Loaded {len(fpi_df)} NSDL Sector Rows")
+
+        sector_cols = [c for c in fpi_df.columns if "sector" in str(c).lower()]
+        net_cols = [c for c in fpi_df.columns if "net" in str(c).lower() and ("equity" in str(c).lower() or "total" in str(c).lower() or "inv" in str(c).lower())]
+
+        if sector_cols and net_cols:
+            sec_col = sector_cols[0]
+            val_col = st.selectbox("Select FPI Flow Column to Plot", options=net_cols, index=len(net_cols)-1)
+
+            chart_df = fpi_df[[sec_col, val_col]].copy()
+            chart_df[val_col] = pd.to_numeric(chart_df[val_col].astype(str).str.replace(",", "").str.replace("(", "-").str.replace(")", ""), errors="coerce")
+            chart_df = chart_df.dropna().sort_values(by=val_col, ascending=True)
+            chart_df = chart_df[~chart_df[sec_col].astype(str).str.lower().str.contains("total|grand")]
+
+            colors = ["#EF4444" if v < 0 else "#10B981" for v in chart_df[val_col]]
+            fig_fpi = go.Figure(go.Bar(
+                x=chart_df[val_col],
+                y=chart_df[sec_col],
+                orientation="h",
+                marker_color=colors
+            ))
+            fig_fpi.update_layout(
+                title=f"FPI Sectoral Net Flow ({val_col})",
+                xaxis_title="Net Investment (₹ Crore)",
+                yaxis_title="",
+                height=max(500, len(chart_df) * 28),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                font=dict(color="#111827")
+            )
+            st.plotly_chart(fig_fpi, use_container_width=True)
+
+        with st.expander("View Full NSDL Table", expanded=True):
+            st.dataframe(fpi_df, use_container_width=True, hide_index=True)
