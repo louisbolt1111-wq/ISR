@@ -139,7 +139,7 @@ with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
     st.markdown(
         "Download the latest fortnightly report from [NSDL FPI Monitor](https://nsdl.co.in) "
-        "(click **View Report**, then **Export to Excel** or press `Ctrl+S` to save as HTML) and drop it below:"
+        "(click **View Report**, then press `Ctrl+S` to save as HTML) and drop it below:"
     )
 
     uploaded = st.file_uploader(
@@ -159,46 +159,77 @@ with tab2:
                 fpi_df = pd.read_excel(uploaded)
         except Exception as e:
             st.error(f"Could not read file: {e}")
-    elif os.path.exists("nsdl_fpi_latest.csv"):
-        temp_df = pd.read_csv("nsdl_fpi_latest.csv")
-        if "Status" not in temp_df.columns:
-            fpi_df = temp_df
 
     if fpi_df is not None:
-        if isinstance(fpi_df.columns, pd.MultiIndex):
-            fpi_df.columns = [" ".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() for col in fpi_df.columns]
+        # Detect NSDL's 4-row embedded header (where 'Sectors' is inside the first few rows)
+        header_row_idx = None
+        for i in range(min(6, len(fpi_df))):
+            row_vals = [str(v).strip().lower() for v in fpi_df.iloc[i].values]
+            if "sectors" in row_vals:
+                header_row_idx = i
+                break
 
-        st.success(f"Loaded {len(fpi_df)} NSDL Sector Rows")
+        if header_row_idx is not None:
+            new_cols = []
+            for col_idx in range(len(fpi_df.columns)):
+                parts = []
+                for r in range(header_row_idx + 1):
+                    val = str(fpi_df.iloc[r, col_idx]).strip()
+                    if val and val.lower() not in ["none", "nan", ""]:
+                        if not parts or parts[-1] != val:
+                            parts.append(val)
+                new_cols.append(" | ".join(parts) if parts else f"Col_{col_idx}")
+            fpi_df.columns = new_cols
+            fpi_df = fpi_df.iloc[header_row_idx + 1:].reset_index(drop=True)
 
-        sector_cols = [c for c in fpi_df.columns if "sector" in str(c).lower()]
-        net_cols = [c for c in fpi_df.columns if "net" in str(c).lower() and ("equity" in str(c).lower() or "total" in str(c).lower() or "inv" in str(c).lower())]
+        # Keep Sector column + INR Cr. columns (filter out USD Mn columns for clarity)
+        sec_col = [c for c in fpi_df.columns if "sector" in c.lower()][0]
+        inr_cols = [c for c in fpi_df.columns if "inr cr" in c.lower()]
+        display_cols = [sec_col] + inr_cols if inr_cols else list(fpi_df.columns)
+        clean_df = fpi_df[display_cols].copy()
 
-        if sector_cols and net_cols:
-            sec_col = sector_cols[0]
-            val_col = st.selectbox("Select FPI Flow Column to Plot", options=net_cols, index=len(net_cols)-1)
+        # Filter out Total / Grand Total rows
+        clean_df = clean_df[~clean_df[sec_col].astype(str).str.lower().str.contains("total|grand|nan")]
 
-            chart_df = fpi_df[[sec_col, val_col]].copy()
-            chart_df[val_col] = pd.to_numeric(chart_df[val_col].astype(str).str.replace(",", "").str.replace("(", "-").str.replace(")", ""), errors="coerce")
+        # Default to Net Investment Equity column if present
+        net_eq_cols = [c for c in inr_cols if "net" in c.lower() and "equity" in c.lower()]
+        default_idx = inr_cols.index(net_eq_cols[-1]) if net_eq_cols else 0
+
+        if inr_cols:
+            val_col = st.selectbox("Select Metric to Visualize (₹ Crore)", options=inr_cols, index=default_idx)
+
+            chart_df = clean_df[[sec_col, val_col]].copy()
+            chart_df[val_col] = (
+                chart_df[val_col]
+                .astype(str)
+                .str.replace(",", "")
+                .str.replace("(", "-", regex=False)
+                .str.replace(")", "", regex=False)
+            )
+            chart_df[val_col] = pd.to_numeric(chart_df[val_col], errors="coerce")
             chart_df = chart_df.dropna().sort_values(by=val_col, ascending=True)
-            chart_df = chart_df[~chart_df[sec_col].astype(str).str.lower().str.contains("total|grand")]
 
             colors = ["#EF4444" if v < 0 else "#10B981" for v in chart_df[val_col]]
             fig_fpi = go.Figure(go.Bar(
                 x=chart_df[val_col],
                 y=chart_df[sec_col],
                 orientation="h",
-                marker_color=colors
+                marker_color=colors,
+                text=chart_df[val_col].apply(lambda x: f"{x:,.0f}"),
+                textposition="outside"
             ))
             fig_fpi.update_layout(
-                title=f"FPI Sectoral Net Flow ({val_col})",
-                xaxis_title="Net Investment (₹ Crore)",
+                title=f"NSDL FPI Sectoral Flow — {val_col}",
+                xaxis_title="Value (₹ Crore)",
                 yaxis_title="",
-                height=max(500, len(chart_df) * 28),
+                height=max(550, len(chart_df) * 26),
                 plot_bgcolor="white",
                 paper_bgcolor="white",
-                font=dict(color="#111827")
+                font=dict(color="#111827"),
+                margin=dict(l=20, r=60, t=50, b=40)
             )
             st.plotly_chart(fig_fpi, use_container_width=True)
 
-        with st.expander("View Full NSDL Table", expanded=True):
-            st.dataframe(fpi_df, use_container_width=True, hide_index=True)
+        with st.expander("View Cleaned NSDL Table (₹ Crore)", expanded=False):
+            st.dataframe(clean_df, use_container_width=True, hide_index=True)
+width=True, hide_index=True)
