@@ -161,7 +161,6 @@ with tab2:
             st.error(f"Could not read file: {e}")
 
     if fpi_df is not None:
-        # Detect NSDL's 4-row embedded header (where 'Sectors' is inside the first few rows)
         header_row_idx = None
         for i in range(min(6, len(fpi_df))):
             row_vals = [str(v).strip().lower() for v in fpi_df.iloc[i].values]
@@ -182,18 +181,19 @@ with tab2:
             fpi_df.columns = new_cols
             fpi_df = fpi_df.iloc[header_row_idx + 1:].reset_index(drop=True)
 
-        # Keep Sector column + INR Cr. columns (filter out USD Mn columns for clarity)
         sec_col = [c for c in fpi_df.columns if "sector" in c.lower()][0]
         inr_cols = [c for c in fpi_df.columns if "inr cr" in c.lower()]
         display_cols = [sec_col] + inr_cols if inr_cols else list(fpi_df.columns)
         clean_df = fpi_df[display_cols].copy()
 
-        # Filter out Total / Grand Total rows
         clean_df = clean_df[~clean_df[sec_col].astype(str).str.lower().str.contains("total|grand|nan")]
 
-        # Default to Net Investment Equity column if present
-        net_eq_cols = [c for c in inr_cols if "net" in c.lower() and "equity" in c.lower()]
-        default_idx = inr_cols.index(net_eq_cols[-1]) if net_eq_cols else 0
+        # Pick Direct FPI Equity Net Investment (exclude Mutual Funds)
+        direct_net_eq = [
+            c for c in inr_cols
+            if "net" in c.lower() and c.lower().endswith("| equity") and "mutual" not in c.lower()
+        ]
+        default_idx = inr_cols.index(direct_net_eq[0]) if direct_net_eq else 0
 
         if inr_cols:
             val_col = st.selectbox("Select Metric to Visualize (₹ Crore)", options=inr_cols, index=default_idx)
@@ -216,17 +216,17 @@ with tab2:
                 orientation="h",
                 marker_color=colors,
                 text=chart_df[val_col].apply(lambda x: f"{x:,.0f}"),
-                textposition="outside"
+                textposition="outside",
+                textfont=dict(color="#111827", size=11)
             ))
             fig_fpi.update_layout(
-                title=f"NSDL FPI Sectoral Flow — {val_col}",
-                xaxis_title="Value (₹ Crore)",
-                yaxis_title="",
-                height=max(550, len(chart_df) * 26),
+                title=dict(text=f"NSDL FPI Sectoral Flow — {val_col}", font=dict(color="#111827", size=15)),
+                xaxis=dict(title="Net Flow (₹ Crore)", tickfont=dict(color="#111827"), title_font=dict(color="#111827"), gridcolor="#E5E7EB"),
+                yaxis=dict(title="", tickfont=dict(color="#111827", size=11)),
+                height=max(600, len(chart_df) * 28),
                 plot_bgcolor="white",
                 paper_bgcolor="white",
-                font=dict(color="#111827"),
-                margin=dict(l=20, r=60, t=50, b=40)
+                margin=dict(l=20, r=70, t=55, b=40)
             )
             st.plotly_chart(fig_fpi, use_container_width=True)
 
