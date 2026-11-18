@@ -18,9 +18,6 @@ def wma(series, period):
     weights = np.arange(1, period + 1)
     return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
-# ==========================================
-# TAB 1: NSE PRICE ROTATION (RRG)
-# ==========================================
 with tab1:
     SECTORS = {
         "BANKNIFTY": "^NSEBANK",
@@ -39,7 +36,7 @@ with tab1:
     }
     BENCHMARK = "^NSEI"
 
-    col1, col2, col3 = st.columns([1.2, 1.5, 2.3])
+    col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         timeframe = st.radio("Timeframe", ["Weekly", "Daily"], horizontal=True)
     with col2:
@@ -52,71 +49,77 @@ with tab1:
         )
 
     @st.cache_data(ttl=1800)
-    def fetch_market_data():
+    def compute_jdk_rrg(tf):
         tickers = [BENCHMARK] + list(SECTORS.values())
         raw = yf.download(tickers, period="3y", interval="1d", progress=False)["Close"]
-        if isinstance(raw, pd.Series):
-            raw = raw.to_frame()
         raw = raw.ffill().dropna(subset=[BENCHMARK])
-        return raw
 
-    raw = fetch_market_data()
-    last_date = raw.index[-1].strftime("%d %b %Y")
-
-    len_ratio = 60 if timeframe == "Weekly" else 14
-    len_mom = 25 if timeframe == "Weekly" else 7
-    norm_win = 250 if timeframe == "Weekly" else 60
-    step = 5 if timeframe == "Weekly" else 1
-
-    rrg_data = {}
-    quad_lists = {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}
-    table_rows = []
-
-    for name, ticker in SECTORS.items():
-        if ticker not in raw.columns or raw[ticker].dropna().empty:
-            continue
-
-        rs = (raw[ticker] / raw[BENCHMARK]) * 100
-        rs_wma = wma(rs, len_ratio)
-        rs_ratio = 100 + ((rs_wma - rs_wma.rolling(norm_win).mean()) / rs_wma.rolling(norm_win).std()) * 2
-
-        roc = (rs_ratio / rs_ratio.shift(1) - 1) * 100
-        mom_wma = wma(roc, len_mom)
-        rs_momentum = 100 + ((mom_wma - mom_wma.rolling(norm_win).mean()) / mom_wma.rolling(norm_win).std()) * 2
-
-        df_sec = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_momentum}).dropna()
-        if len(df_sec) < 3:
-            continue
-
-        tail_df = df_sec.iloc[::step].tail(tail_length)
-        if tail_df.index[-1] != df_sec.index[-1]:
-            tail_df = pd.concat([tail_df.iloc[1:], df_sec.iloc[[-1]]])
-
-        rrg_data[name] = tail_df
-
-        r = round(float(tail_df["RS_Ratio"].iloc[-1]), 2)
-        m = round(float(tail_df["RS_Momentum"].iloc[-1]), 2)
-
-        if r >= 100 and m >= 100:
-            q = "Leading"
-        elif r < 100 and m >= 100:
-            q = "Improving"
-        elif r >= 100 and m < 100:
-            q = "Weakening"
+        if tf == "Weekly":
+            bars = raw.resample("W-FRI").last().dropna(subset=[BENCHMARK])
+            len_ratio = 10
+            len_mom = 10
+            norm_win = 52
         else:
-            q = "Lagging"
+            bars = raw
+            len_ratio = 14
+            len_mom = 14
+            norm_win = 100
 
-        quad_lists[q].append(name)
-        table_rows.append({"Sector": name, "Quadrant": q, "Trend (RS-Ratio)": r, "Momentum (RS-Mom)": m})
+        last_date = raw.index[-1].strftime("%d %b %Y")
+        results = {}
 
-    table_df = pd.DataFrame(table_rows)
+        for name, ticker in SECTORS.items():
+            if ticker not in bars.columns or bars[ticker].dropna().empty:
+                continue
+
+            rs = (bars[ticker] / bars[BENCHMARK]) * 100
+            rs_wma = wma(rs, len_ratio)
+            rs_ratio = 100 + ((rs_wma - rs_wma.rolling(norm_win).mean()) / rs_wma.rolling(norm_win).std()) * 2
+
+            roc = (rs_wma / rs_wma.shift(1) - 1) * 100
+            mom_wma = wma(roc, len_mom)
+            rs_momentum = 100 + ((mom_wma - mom_wma.rolling(norm_win).mean()) / mom_wma.rolling(norm_win).std()) * 2
+
+            df_sec = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_momentum}).dropna()
+            if len(df_sec) >= 3:
+                results[name] = df_sec
+
+        return results, last_date
+
+    rrg_data, last_date = compute_jdk_rrg(timeframe)
     st.caption(f"Benchmark: **Nifty 50** | Latest Data: **{last_date}**")
 
-    active_sectors = [s for s in (selected_sectors if selected_sectors else list(rrg_data.keys())) if s in rrg_data]
+    active_sectors = selected_sectors if selected_sectors else list(rrg_data.keys())
+    active_sectors = [s for s in active_sectors if s in rrg_data]
 
-    if active_sectors:
-        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors])
-        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors])
+    if not active_sectors:
+        st.warning("Yahoo Finance temporarily returned incomplete sector data. Click the top-right menu -> Clear cache, then refresh.")
+    else:
+        quad_lists = {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}
+        table_rows = []
+        trimmed_data = {}
+
+        for name in active_sectors:
+            tail_df = rrg_data[name].tail(tail_length)
+            trimmed_data[name] = tail_df
+
+            r = round(float(tail_df["RS_Ratio"].iloc[-1]), 2)
+            m = round(float(tail_df["RS_Momentum"].iloc[-1]), 2)
+
+            if r >= 100 and m >= 100:
+                q = "Leading"
+            elif r < 100 and m >= 100:
+                q = "Improving"
+            elif r >= 100 and m < 100:
+                q = "Weakening"
+            else:
+                q = "Lagging"
+
+            quad_lists[q].append(name)
+            table_rows.append({"Sector": name, "Quadrant": q, "Trend (RS-Ratio)": r, "Momentum (RS-Mom)": m})
+
+        all_x = pd.concat([trimmed_data[s]["RS_Ratio"] for s in active_sectors])
+        all_y = pd.concat([trimmed_data[s]["RS_Momentum"] for s in active_sectors])
         bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.18
         bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.18
 
@@ -133,8 +136,8 @@ with tab1:
         fig.add_annotation(x=100+bound_x*0.86, y=100-bound_y*0.92, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=13))
 
         for name in active_sectors:
-            tail = rrg_data[name]
-            sizes = [5] * (len(tail) - 1) + [12]
+            tail = trimmed_data[name]
+            sizes = [5] * (len(tail) - 1) + [13]
             fig.add_trace(go.Scatter(
                 x=tail["RS_Ratio"],
                 y=tail["RS_Momentum"],
@@ -194,18 +197,14 @@ with tab1:
             st.error(f"**Lagging ({len(quad_lists['Lagging'])})**\n\n" + ("\n".join([f"- {s}" for s in quad_lists["Lagging"]]) or "No symbols"))
 
         with st.expander("View Full Numerical Table"):
+            table_df = pd.DataFrame(table_rows)
             st.dataframe(table_df.sort_values(by=["Trend (RS-Ratio)", "Momentum (RS-Mom)"], ascending=False), use_container_width=True, hide_index=True)
-    else:
-        st.warning("Yahoo Finance temporarily returned incomplete sector data. Click the top-right menu -> Clear cache, then refresh the page.")
 
-# ==========================================
-# TAB 2: NSDL FPI SECTORAL FLOW
-# ==========================================
 with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
     st.markdown(
         "Auto-loads `nsdl_fpi_latest.html` from your repository, or upload a newer report from "
-        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/FPI_Fortnightly_Selection.aspx):"
+        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/Latest.aspx):"
     )
 
     uploaded = st.file_uploader(
@@ -298,9 +297,6 @@ with tab2:
         with st.expander("View Cleaned NSDL Table (₹ Crore)", expanded=False):
             st.dataframe(clean_df, use_container_width=True, hide_index=True)
 
-# ==========================================
-# TAB 3: STOCK-LEVEL SECTOR DRILL-DOWN
-# ==========================================
 with tab3:
     st.subheader("Stock-Level Institutional Accumulation Drill-Down")
     st.markdown(
@@ -408,11 +404,11 @@ with tab3:
             if sym not in close.columns or close[sym].dropna().empty:
                 continue
             rs = (close[sym] / close["^NSEI"]) * 100
-            rs_wma = wma(rs, 30)
-            rs_ratio = 100 + ((rs_wma - rs_wma.rolling(120).mean()) / rs_wma.rolling(120).std()) * 2
-            roc = (rs_ratio / rs_ratio.shift(1) - 1) * 100
-            mom_wma = wma(roc, 12)
-            rs_mom = 100 + ((mom_wma - mom_wma.rolling(120).mean()) / mom_wma.rolling(120).std()) * 2
+            rs_wma = wma(rs, 14)
+            rs_ratio = 100 + ((rs_wma - rs_wma.rolling(100).mean()) / rs_wma.rolling(100).std()) * 2
+            roc = (rs_wma / rs_wma.shift(1) - 1) * 100
+            mom_wma = wma(roc, 14)
+            rs_mom = 100 + ((mom_wma - mom_wma.rolling(100).mean()) / mom_wma.rolling(100).std()) * 2
 
             df_s = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_mom}).dropna()
             if len(df_s) < 6:
