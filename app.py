@@ -39,7 +39,7 @@ with tab1:
     }
     BENCHMARK = "^NSEI"
 
-    col1, col2, col3 = st.columns([1.2, 1.2, 2])
+    col1, col2, col3 = st.columns(3)
     with col1:
         timeframe = st.radio("Timeframe", ["Weekly", "Daily"], horizontal=True)
     with col2:
@@ -55,6 +55,8 @@ with tab1:
     def compute_jdk_rrg(tf, t_len):
         tickers = [BENCHMARK] + list(SECTORS.values())
         raw = yf.download(tickers, period="2y", interval="1d", progress=False)["Close"]
+        if isinstance(raw, pd.Series):
+            raw = raw.to_frame()
         raw = raw.ffill().dropna(subset=[BENCHMARK])
         last_date = raw.index[-1].strftime("%d %b %Y")
 
@@ -109,11 +111,11 @@ with tab1:
     rrg_data, quad_lists, table_df, last_date = compute_jdk_rrg(timeframe, tail_length)
     st.caption(f"Benchmark: **Nifty 50** | Latest Data: **{last_date}**")
 
-    active_sectors = selected_sectors if selected_sectors else list(rrg_data.keys())
+    active_sectors = [s for s in (selected_sectors if selected_sectors else list(rrg_data.keys())) if s in rrg_data]
 
     if active_sectors:
-        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors if s in rrg_data])
-        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors if s in rrg_data])
+        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors])
+        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors])
         bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.18
         bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.18
 
@@ -130,8 +132,6 @@ with tab1:
         fig.add_annotation(x=100+bound_x*0.86, y=100-bound_y*0.92, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=13))
 
         for name in active_sectors:
-            if name not in rrg_data:
-                continue
             tail = rrg_data[name]
             sizes = [5] * (len(tail) - 1) + [12]
             fig.add_trace(go.Scatter(
@@ -184,16 +184,18 @@ with tab1:
 
         q1, q2, q3, q4 = st.columns(4)
         with q1:
-            st.info(f"**Improving ({len(quad_lists['Improving'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Improving"]]) or "No symbols"))
+            st.info(f"**Improving ({len(quad_lists['Improving'])})**\n\n" + ("\n".join([f"- {s}" for s in quad_lists["Improving"]]) or "No symbols"))
         with q2:
-            st.success(f"**Leading ({len(quad_lists['Leading'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Leading"]]) or "No symbols"))
+            st.success(f"**Leading ({len(quad_lists['Leading'])})**\n\n" + ("\n".join([f"- {s}" for s in quad_lists["Leading"]]) or "No symbols"))
         with q3:
-            st.warning(f"**Weakening ({len(quad_lists['Weakening'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Weakening"]]) or "No symbols"))
+            st.warning(f"**Weakening ({len(quad_lists['Weakening'])})**\n\n" + ("\n".join([f"- {s}" for s in quad_lists["Weakening"]]) or "No symbols"))
         with q4:
-            st.error(f"**Lagging ({len(quad_lists['Lagging'])})**\n\n" + ("\n".join([f"• {s}" for s in quad_lists["Lagging"]]) or "No symbols"))
+            st.error(f"**Lagging ({len(quad_lists['Lagging'])})**\n\n" + ("\n".join([f"- {s}" for s in quad_lists["Lagging"]]) or "No symbols"))
 
         with st.expander("View Full Numerical Table"):
             st.dataframe(table_df.sort_values(by=["Trend (RS-Ratio)", "Momentum (RS-Mom)"], ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.warning("Yahoo Finance temporarily returned incomplete sector data. Click the top-right menu -> Clear cache, then refresh the page.")
 
 # ==========================================
 # TAB 2: NSDL FPI SECTORAL FLOW
@@ -202,7 +204,7 @@ with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
     st.markdown(
         "Auto-loads `nsdl_fpi_latest.html` from your repository, or upload a newer report from "
-        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/FPI_Fortnightly_Selection.aspx):"
+        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/Latest.aspx):"
     )
 
     uploaded = st.file_uploader(
