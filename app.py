@@ -232,4 +232,3 @@ with tab2:
 
         with st.expander("View Cleaned NSDL Table (₹ Crore)", expanded=False):
             st.dataframe(clean_df, use_container_width=True, hide_index=True)
-width=True, hide_index=True)
