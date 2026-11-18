@@ -147,18 +147,20 @@ with tab2:
         type=["html", "htm", "xls", "xlsx", "csv"]
     )
 
-    fpi_df = None
+        fpi_df = None
     if uploaded is not None:
         try:
             if uploaded.name.endswith((".html", ".htm")):
-                tables = pd.read_html(uploaded)
-                fpi_df = max(tables, key=len)
+                fpi_df = max(pd.read_html(uploaded), key=len)
             elif uploaded.name.endswith(".csv"):
                 fpi_df = pd.read_csv(uploaded)
             else:
                 fpi_df = pd.read_excel(uploaded)
         except Exception as e:
             st.error(f"Could not read file: {e}")
+    elif os.path.exists("nsdl_fpi_latest.html"):
+        fpi_df = max(pd.read_html("nsdl_fpi_latest.html"), key=len)
+
 
     if fpi_df is not None:
         header_row_idx = None
