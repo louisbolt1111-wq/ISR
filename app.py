@@ -8,8 +8,19 @@ import os
 st.set_page_config(page_title="NSE + NSDL Sector Rotation", layout="wide")
 st.title("Indian Market Sector Rotation: NSE Price + NSDL FPI Flow")
 
-tab1, tab2 = st.tabs(["1. NSE Price Rotation (RRG)", "2. NSDL FPI Sectoral Flow"])
+tab1, tab2, tab3 = st.tabs([
+    "1. NSE Price Rotation (RRG)",
+    "2. NSDL FPI Sectoral Flow",
+    "3. Stock-Level Sector Drill-Down"
+])
 
+def wma(series, period):
+    weights = np.arange(1, period + 1)
+    return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+# ==========================================
+# TAB 1: NSE PRICE ROTATION (RRG)
+# ==========================================
 with tab1:
     SECTORS = {
         "BANKNIFTY": "^NSEBANK",
@@ -28,7 +39,7 @@ with tab1:
     }
     BENCHMARK = "^NSEI"
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns([1.2, 1.2, 2])
     with col1:
         timeframe = st.radio("Timeframe", ["Weekly", "Daily"], horizontal=True)
     with col2:
@@ -40,26 +51,16 @@ with tab1:
             default=[]
         )
 
-    def wma(series, period):
-        weights = np.arange(1, period + 1)
-        return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
-
     @st.cache_data(ttl=1800)
-    def compute_jdk_rrg(tf):
+    def compute_jdk_rrg(tf, t_len):
         tickers = [BENCHMARK] + list(SECTORS.values())
-        data = yf.download(tickers, period="2y", interval="1d", progress=False)
-        if data.empty:
-            return {}, {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}, pd.DataFrame(), "N/A"
-        
-        raw = data["Close"] if "Close" in data else data
-        if isinstance(raw, pd.Series):
-            raw = raw.to_frame()
+        raw = yf.download(tickers, period="2y", interval="1d", progress=False)["Close"]
         raw = raw.ffill().dropna(subset=[BENCHMARK])
         last_date = raw.index[-1].strftime("%d %b %Y")
 
         len_ratio = 60 if tf == "Weekly" else 14
         len_mom = 25 if tf == "Weekly" else 7
-        norm_win = 200 if tf == "Weekly" else 60
+        norm_win = 250 if tf == "Weekly" else 60
 
         results = {}
         quad_lists = {"Improving": [], "Leading": [], "Weakening": [], "Lagging": []}
@@ -78,11 +79,11 @@ with tab1:
             rs_momentum = 100 + ((mom_wma - mom_wma.rolling(norm_win).mean()) / mom_wma.rolling(norm_win).std()) * 2
 
             df_sec = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_momentum}).dropna()
-            if len(df_sec) < 3:
+            if len(df_sec) < t_len:
                 continue
 
             step = 5 if tf == "Weekly" else 1
-            tail_df = df_sec.iloc[::step].tail(tail_length)
+            tail_df = df_sec.iloc[::step].tail(t_len)
             if tail_df.index[-1] != df_sec.index[-1]:
                 tail_df = pd.concat([tail_df.iloc[1:], df_sec.iloc[[-1]]])
 
@@ -105,18 +106,16 @@ with tab1:
 
         return results, quad_lists, pd.DataFrame(table_rows), last_date
 
-    rrg_data, quad_lists, table_df, last_date = compute_jdk_rrg(timeframe)
+    rrg_data, quad_lists, table_df, last_date = compute_jdk_rrg(timeframe, tail_length)
     st.caption(f"Benchmark: **Nifty 50** | Latest Data: **{last_date}**")
 
-    active_sectors = [s for s in (selected_sectors if selected_sectors else list(rrg_data.keys())) if s in rrg_data]
+    active_sectors = selected_sectors if selected_sectors else list(rrg_data.keys())
 
-    if not active_sectors:
-        st.warning("Yahoo Finance rate-limited or returned no sector data right now. Click the menu (top-right) -> Clear cache and rerun in 10 seconds.")
-    else:
-        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors])
-        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors])
-        bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.15
-        bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.15
+    if active_sectors:
+        all_x = pd.concat([rrg_data[s]["RS_Ratio"] for s in active_sectors if s in rrg_data])
+        all_y = pd.concat([rrg_data[s]["RS_Momentum"] for s in active_sectors if s in rrg_data])
+        bound_x = max(abs(all_x.max() - 100), abs(100 - all_x.min()), 3) * 1.18
+        bound_y = max(abs(all_y.max() - 100), abs(100 - all_y.min()), 3) * 1.18
 
         fig = go.Figure()
 
@@ -125,12 +124,14 @@ with tab1:
         fig.add_shape(type="rect", x0=100-bound_x, y0=100-bound_y, x1=100, y1=100, fillcolor="rgba(254, 226, 226, 0.55)", line_width=0, layer="below")
         fig.add_shape(type="rect", x0=100, y0=100-bound_y, x1=100+bound_x, y1=100, fillcolor="rgba(254, 249, 195, 0.55)", line_width=0, layer="below")
 
-        fig.add_annotation(x=100-bound_x*0.92, y=100+bound_y*0.93, text="<b>Improving</b>", showarrow=False, font=dict(color="#2563EB", size=12))
-        fig.add_annotation(x=100+bound_x*0.92, y=100+bound_y*0.93, text="<b>Leading</b>", showarrow=False, font=dict(color="#16A34A", size=12))
-        fig.add_annotation(x=100-bound_x*0.92, y=100-bound_y*0.93, text="<b>Lagging</b>", showarrow=False, font=dict(color="#DC2626", size=12))
-        fig.add_annotation(x=100+bound_x*0.92, y=100-bound_y*0.93, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=12))
+        fig.add_annotation(x=100-bound_x*0.86, y=100+bound_y*0.92, text="<b>Improving</b>", showarrow=False, font=dict(color="#2563EB", size=13))
+        fig.add_annotation(x=100+bound_x*0.86, y=100+bound_y*0.92, text="<b>Leading</b>", showarrow=False, font=dict(color="#16A34A", size=13))
+        fig.add_annotation(x=100-bound_x*0.86, y=100-bound_y*0.92, text="<b>Lagging</b>", showarrow=False, font=dict(color="#DC2626", size=13))
+        fig.add_annotation(x=100+bound_x*0.86, y=100-bound_y*0.92, text="<b>Weakening</b>", showarrow=False, font=dict(color="#CA8A04", size=13))
 
         for name in active_sectors:
+            if name not in rrg_data:
+                continue
             tail = rrg_data[name]
             sizes = [5] * (len(tail) - 1) + [12]
             fig.add_trace(go.Scatter(
@@ -138,27 +139,45 @@ with tab1:
                 y=tail["RS_Momentum"],
                 mode="lines+markers+text",
                 line_shape="spline",
-                line=dict(width=2),
+                line=dict(width=2.2),
                 name=name,
                 text=[""] * (len(tail) - 1) + [name],
                 textposition="middle right",
-                textfont=dict(size=10, color="#1F2937"),
+                textfont=dict(size=11, color="#111827"),
                 marker=dict(size=sizes, line=dict(width=1, color="white"))
             ))
 
-        fig.add_hline(y=100, line_width=1.5, line_color="#9CA3AF")
-        fig.add_vline(x=100, line_width=1.5, line_color="#9CA3AF")
+        fig.add_hline(y=100, line_width=1.5, line_color="#6B7280")
+        fig.add_vline(x=100, line_width=1.5, line_color="#6B7280")
         fig.update_layout(
             plot_bgcolor="white",
             paper_bgcolor="white",
             font=dict(color="#111827"),
-            xaxis_title="Trend (RS-Ratio)",
-            yaxis_title="Momentum (RS-Momentum)",
-            xaxis=dict(range=[100 - bound_x, 100 + bound_x], gridcolor="#E5E7EB", zeroline=False),
-            yaxis=dict(range=[100 - bound_y, 100 + bound_y], gridcolor="#E5E7EB", zeroline=False),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            height=650,
-            margin=dict(l=40, r=40, t=60, b=40)
+            xaxis=dict(
+                title=dict(text="Trend (RS-Ratio)", font=dict(color="#111827", size=13)),
+                tickfont=dict(color="#111827", size=11),
+                range=[100 - bound_x, 100 + bound_x],
+                gridcolor="#E5E7EB",
+                zeroline=False
+            ),
+            yaxis=dict(
+                title=dict(text="Momentum (RS-Momentum)", font=dict(color="#111827", size=13)),
+                tickfont=dict(color="#111827", size=11),
+                range=[100 - bound_y, 100 + bound_y],
+                gridcolor="#E5E7EB",
+                zeroline=False
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                font=dict(color="#111827", size=11),
+                bgcolor="rgba(255,255,255,0.9)"
+            ),
+            height=660,
+            margin=dict(l=50, r=50, t=70, b=50)
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -176,11 +195,14 @@ with tab1:
         with st.expander("View Full Numerical Table"):
             st.dataframe(table_df.sort_values(by=["Trend (RS-Ratio)", "Momentum (RS-Mom)"], ascending=False), use_container_width=True, hide_index=True)
 
+# ==========================================
+# TAB 2: NSDL FPI SECTORAL FLOW
+# ==========================================
 with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
     st.markdown(
         "Auto-loads `nsdl_fpi_latest.html` from your repository, or upload a newer report from "
-        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/Latest.aspx):"
+        "[NSDL FPI Monitor](https://www.fpi.nsdl.co.in/web/Reports/FPI_Fortnightly_Selection.aspx):"
     )
 
     uploaded = st.file_uploader(
@@ -227,14 +249,13 @@ with tab2:
         inr_cols = [c for c in fpi_df.columns if "inr cr" in c.lower()]
         display_cols = [sec_col] + inr_cols if inr_cols else list(fpi_df.columns)
         clean_df = fpi_df[display_cols].copy()
-
         clean_df = clean_df[~clean_df[sec_col].astype(str).str.lower().str.contains("total|grand|nan")]
 
         direct_net_eq = [
             c for c in inr_cols
             if "net" in c.lower() and c.lower().endswith("| equity") and "mutual" not in c.lower()
         ]
-        default_idx = inr_cols.index(direct_net_eq[0]) if direct_net_eq else 0
+        default_idx = inr_cols.index(direct_net_eq[-1]) if direct_net_eq else 0
 
         if inr_cols:
             val_col = st.selectbox("Select Metric to Visualize (₹ Crore)", options=inr_cols, index=default_idx)
@@ -273,3 +294,187 @@ with tab2:
 
         with st.expander("View Cleaned NSDL Table (₹ Crore)", expanded=False):
             st.dataframe(clean_df, use_container_width=True, hide_index=True)
+
+# ==========================================
+# TAB 3: STOCK-LEVEL SECTOR DRILL-DOWN
+# ==========================================
+with tab3:
+    st.subheader("Stock-Level Institutional Accumulation Drill-Down")
+    st.markdown(
+        "Pick an NSDL sector below to inspect its top NSE stocks on a **Stock RRG vs. Nifty 50**, "
+        "**Volume Surge Ratio** (institutional footprint), and direct links to **FII Shareholding %**."
+    )
+
+    SECTOR_STOCKS = {
+        "Telecommunication": {
+            "Bharti Airtel": "BHARTIARTL.NS",
+            "Indus Towers": "INDUSTOWER.NS",
+            "Vodafone Idea": "IDEA.NS",
+            "Tata Communications": "TATACOMM.NS",
+            "Tejas Networks": "TEJASNET.NS",
+            "HFCL": "HFCL.NS"
+        },
+        "Information Technology": {
+            "TCS": "TCS.NS",
+            "Infosys": "INFY.NS",
+            "HCL Tech": "HCLTECH.NS",
+            "Wipro": "WIPRO.NS",
+            "Tech Mahindra": "TECHM.NS",
+            "LTIMindtree": "LTIM.NS",
+            "Persistent Systems": "PERSISTENT.NS",
+            "Coforge": "COFORGE.NS"
+        },
+        "Financial Services": {
+            "HDFC Bank": "HDFCBANK.NS",
+            "ICICI Bank": "ICICIBANK.NS",
+            "SBI": "SBIN.NS",
+            "Axis Bank": "AXISBANK.NS",
+            "Kotak Bank": "KOTAKBANK.NS",
+            "Bajaj Finance": "BAJFINANCE.NS",
+            "Jio Financial": "JIOFIN.NS",
+            "Bank of Baroda": "BANKBARODA.NS"
+        },
+        "Healthcare": {
+            "Sun Pharma": "SUNPHARMA.NS",
+            "Cipla": "CIPLA.NS",
+            "Dr Reddys": "DRREDDY.NS",
+            "Apollo Hospitals": "APOLLOHOSP.NS",
+            "Divis Labs": "DIVISLAB.NS",
+            "Lupin": "LUPIN.NS",
+            "Max Healthcare": "MAXHEALTH.NS"
+        },
+        "Automobile and Auto Components": {
+            "M&M": "M&M.NS",
+            "Maruti Suzuki": "MARUTI.NS",
+            "Tata Motors": "TATAMOTORS.NS",
+            "Bajaj Auto": "BAJAJ-AUTO.NS",
+            "Eicher Motors": "EICHERMOT.NS",
+            "TVS Motor": "TVSMOTOR.NS",
+            "Motherson": "MOTHERSON.NS"
+        },
+        "Capital Goods": {
+            "L&T": "LT.NS",
+            "Siemens": "SIEMENS.NS",
+            "ABB India": "ABB.NS",
+            "HAL": "HAL.NS",
+            "BEL": "BEL.NS",
+            "Cummins India": "CUMMINSIND.NS",
+            "Polycab": "POLYCAB.NS"
+        },
+        "Oil, Gas & Consumable Fuels": {
+            "Reliance": "RELIANCE.NS",
+            "ONGC": "ONGC.NS",
+            "NTPC": "NTPC.NS",
+            "Power Grid": "POWERGRID.NS",
+            "Coal India": "COALINDIA.NS",
+            "IOC": "IOC.NS",
+            "GAIL": "GAIL.NS"
+        },
+        "Fast Moving Consumer Goods": {
+            "ITC": "ITC.NS",
+            "HUL": "HINDUNILVR.NS",
+            "Nestle India": "NESTLEIND.NS",
+            "Varun Beverages": "VBL.NS",
+            "Trent": "TRENT.NS",
+            "Britannia": "BRITANNIA.NS",
+            "Godrej Consumer": "GODREJCP.NS"
+        },
+        "Metals & Mining": {
+            "Tata Steel": "TATASTEEL.NS",
+            "JSW Steel": "JSWSTEEL.NS",
+            "Hindalco": "HINDALCO.NS",
+            "Vedanta": "VEDL.NS",
+            "Jindal Steel": "JINDALSTEL.NS",
+            "NMDC": "NMDC.NS"
+        }
+    }
+
+    chosen_sec = st.selectbox("Select Sector to Inspect Constituent Stocks", options=list(SECTOR_STOCKS.keys()))
+    stocks_map = SECTOR_STOCKS[chosen_sec]
+
+    @st.cache_data(ttl=1800)
+    def analyze_sector_stocks(stock_dict):
+        tickers = ["^NSEI"] + list(stock_dict.values())
+        data = yf.download(tickers, period="1y", interval="1d", progress=False)
+        close = data["Close"].ffill().dropna(subset=["^NSEI"])
+        vol = data["Volume"].ffill()
+
+        rows = []
+        tails = {}
+        for s_name, sym in stock_dict.items():
+            if sym not in close.columns or close[sym].dropna().empty:
+                continue
+            rs = (close[sym] / close["^NSEI"]) * 100
+            rs_wma = wma(rs, 30)
+            rs_ratio = 100 + ((rs_wma - rs_wma.rolling(120).mean()) / rs_wma.rolling(120).std()) * 2
+            roc = (rs_ratio / rs_ratio.shift(1) - 1) * 100
+            mom_wma = wma(roc, 12)
+            rs_mom = 100 + ((mom_wma - mom_wma.rolling(120).mean()) / mom_wma.rolling(120).std()) * 2
+
+            df_s = pd.DataFrame({"RS_Ratio": rs_ratio, "RS_Momentum": rs_mom}).dropna()
+            if len(df_s) < 6:
+                continue
+
+            tail = df_s.iloc[::5].tail(6)
+            tails[s_name] = tail
+
+            r = round(float(tail["RS_Ratio"].iloc[-1]), 2)
+            m = round(float(tail["RS_Momentum"].iloc[-1]), 2)
+            quad = "Leading" if (r >= 100 and m >= 100) else "Improving" if (r < 100 and m >= 100) else "Weakening" if (r >= 100 and m < 100) else "Lagging"
+
+            avg_vol_20 = vol[sym].iloc[-21:-1].mean()
+            curr_vol = vol[sym].iloc[-1]
+            vol_ratio = round(float(curr_vol / avg_vol_20), 2) if avg_vol_20 > 0 else 0.0
+            ret_1m = round(float((close[sym].iloc[-1] / close[sym].iloc[-21] - 1) * 100), 2)
+
+            nse_code = sym.replace(".NS", "")
+            rows.append({
+                "Stock": s_name,
+                "Quadrant": quad,
+                "RS-Ratio": r,
+                "RS-Momentum": m,
+                "1M Return (%)": ret_1m,
+                "Volume Surge (vs 20D Avg)": f"{vol_ratio}x",
+                "Check FII %": f"https://www.screener.in/company/{nse_code}/consolidated/#shareholding"
+            })
+        return tails, pd.DataFrame(rows)
+
+    stock_tails, stock_table = analyze_sector_stocks(stocks_map)
+
+    if not stock_table.empty:
+        st.dataframe(
+            stock_table.sort_values(by=["RS-Ratio", "RS-Momentum"], ascending=False),
+            column_config={
+                "Check FII %": st.column_config.LinkColumn("FII Shareholding Trend", display_text="Open Screener FII %")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+
+        fig_s = go.Figure()
+        for s_name, tail in stock_tails.items():
+            sizes = [5] * (len(tail) - 1) + [12]
+            fig_s.add_trace(go.Scatter(
+                x=tail["RS_Ratio"],
+                y=tail["RS_Momentum"],
+                mode="lines+markers+text",
+                line_shape="spline",
+                name=s_name,
+                text=[""] * (len(tail) - 1) + [s_name],
+                textposition="top center",
+                textfont=dict(color="#111827", size=11),
+                marker=dict(size=sizes)
+            ))
+        fig_s.add_hline(y=100, line_dash="dash", line_color="#6B7280")
+        fig_s.add_vline(x=100, line_dash="dash", line_color="#6B7280")
+        fig_s.update_layout(
+            title=dict(text=f"{chosen_sec} — Constituent Stocks Relative Rotation vs Nifty 50", font=dict(color="#111827")),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            font=dict(color="#111827"),
+            xaxis=dict(title="Trend (RS-Ratio)", tickfont=dict(color="#111827"), title_font=dict(color="#111827"), gridcolor="#E5E7EB"),
+            yaxis=dict(title="Momentum (RS-Momentum)", tickfont=dict(color="#111827"), title_font=dict(color="#111827"), gridcolor="#E5E7EB"),
+            legend=dict(font=dict(color="#111827")),
+            height=520
+        )
+        st.plotly_chart(fig_s, use_container_width=True)
