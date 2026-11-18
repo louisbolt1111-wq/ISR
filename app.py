@@ -137,8 +137,28 @@ with tab1:
 
 with tab2:
     st.subheader("Fortnightly FPI Sectoral Inflows & Outflows (NSDL)")
+    
     if os.path.exists("nsdl_fpi_latest.csv"):
         fpi_df = pd.read_csv("nsdl_fpi_latest.csv")
+        st.success(f"Loaded NSDL FPI Sector Data ({len(fpi_df)} rows)")
         st.dataframe(fpi_df, use_container_width=True, hide_index=True)
     else:
-        st.info("Waiting for first GitHub Action run to populate NSDL FPI data.")
+        st.warning("Automated CSV not found yet. Click below to fetch directly from NSDL or upload the NSDL HTML/Excel report.")
+        if st.button("Fetch Latest NSDL FPI Data Now"):
+            with st.spinner("Contacting NSDL servers..."):
+                from fetch_nsdl import get_latest_nsdl_fpi
+                get_latest_nsdl_fpi()
+                if os.path.exists("nsdl_fpi_latest.csv"):
+                    st.rerun()
+                else:
+                    st.error("NSDL's firewall blocked the cloud server IP. Download the latest fortnightly file from fpi.nsdl.co.in and upload it below.")
+        
+        uploaded = st.file_uploader("Manual Fallback: Upload NSDL Sector Report (.html, .xls, .xlsx, .csv)", type=["html", "htm", "xls", "xlsx", "csv"])
+        if uploaded is not None:
+            if uploaded.name.endswith((".html", ".htm")):
+                df_up = max(pd.read_html(uploaded), key=len)
+            elif uploaded.name.endswith(".csv"):
+                df_up = pd.read_csv(uploaded)
+            else:
+                df_up = pd.read_excel(uploaded)
+            st.dataframe(df_up, use_container_width=True, hide_index=True)
